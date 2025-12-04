@@ -678,10 +678,14 @@ export default function Tasks() {
     viewerFid: number;
   }): Promise<{ completed: boolean; userMessage?: string; hashWarning?: string; isError?: boolean; neynarExplorerUrl?: string }> => {
     try {
-      // Добавляем небольшую задержку для обновления данных в Neynar API после unlike+like
-      // Это особенно важно для лайков, так как API может обновляться с задержкой
+      // Добавляем задержку для обновления данных в Neynar API
+      // Это особенно важно для лайков и комментариев, так как API может обновляться с задержкой
       if (activityType === 'like') {
-        await new Promise(resolve => setTimeout(resolve, 3000)); // 3 секунды задержки для обновления API
+        await new Promise(resolve => setTimeout(resolve, 3000)); // 3 секунды задержки для лайков
+      } else if (activityType === 'comment') {
+        await new Promise(resolve => setTimeout(resolve, 5000)); // 5 секунд задержки для комментариев (нужно больше времени на индексацию)
+      } else if (activityType === 'recast') {
+        await new Promise(resolve => setTimeout(resolve, 3000)); // 3 секунды задержки для рекастов
       }
       
       const requestBody = {

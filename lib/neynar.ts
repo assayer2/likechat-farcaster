@@ -359,9 +359,10 @@ export async function checkUserCommented(fullHash: string, userFid: number): Pro
   });
   
   // Метод 1: Проверка через cast endpoint с replies (самый надежный метод)
+  // Пробуем с viewer_fid для получения более полной информации
   try {
-    const castUrl = `https://api.neynar.com/v2/farcaster/cast?identifier=${fullHash}&type=hash`;
-    console.log("[neynar] checkUserCommented: Method 1 - checking cast with replies", castUrl);
+    const castUrl = `https://api.neynar.com/v2/farcaster/cast?identifier=${fullHash}&type=hash&viewer_fid=${userFid}`;
+    console.log("[neynar] checkUserCommented: Method 1 - checking cast with replies (with viewer_fid)", castUrl);
     const res = await fetch(castUrl, { headers: { "api_key": cleanApiKey } });
     
     if (res.ok) {
@@ -424,13 +425,56 @@ export async function checkUserCommented(fullHash: string, userFid: number): Pro
       console.warn("[neynar] checkUserCommented: Method 1 - API error", res.status, res.statusText, errorText.substring(0, 200));
     }
   } catch (e: any) {
-    console.warn("[neynar] checkUserCommented: Method 1 - cast endpoint failed", e?.message);
+    console.warn("[neynar] checkUserCommented: Method 1 (with viewer_fid) - cast endpoint failed", e?.message);
+  }
+  
+  // Метод 1b: Fallback - пробуем без viewer_fid (иногда API возвращает больше данных без него)
+  try {
+    const castUrlFallback = `https://api.neynar.com/v2/farcaster/cast?identifier=${fullHash}&type=hash`;
+    console.log("[neynar] checkUserCommented: Method 1b - checking cast without viewer_fid (fallback)", castUrlFallback);
+    const res = await fetch(castUrlFallback, { headers: { "api_key": cleanApiKey } });
+    
+    if (res.ok) {
+      const data = await res.json();
+      const cast = data?.cast || data?.result?.cast;
+      
+      if (cast) {
+        const replies = cast.replies?.casts || cast.replies || cast.direct_replies || cast.thread?.casts || [];
+        const threadReplies = cast.thread?.casts || cast.thread?.replies || [];
+        const allReplies = [...replies, ...threadReplies];
+        
+        if (allReplies.length > 0) {
+          console.log("[neynar] checkUserCommented: Method 1b - found", allReplies.length, "replies (fallback)");
+        }
+        
+        const hasReply = allReplies.some((r: any) => {
+          const authorFid = r.author?.fid || r.fid || r.author_fid;
+          const match = Number(authorFid) === Number(userFid);
+          if (match) {
+            console.log("[neynar] checkUserCommented: ✅ found reply via Method 1b (fallback)", { 
+              replyHash: r.hash, 
+              authorFid, 
+              userFid
+            });
+          }
+          return match;
+        });
+        
+        if (hasReply) {
+          console.log("[neynar] checkUserCommented: ✅ found via Method 1b (fallback)", { fullHash, userFid });
+          return true;
+        }
+      }
+    }
+  } catch (e: any) {
+    console.warn("[neynar] checkUserCommented: Method 1b (fallback) - cast endpoint failed", e?.message);
   }
   
   // Метод 2: Проверка через replies endpoint (специальный endpoint для replies)
+  // Увеличиваем лимит до 100 для получения большего количества replies
   try {
-    const repliesUrl = `https://api.neynar.com/v2/farcaster/cast/replies?identifier=${fullHash}&type=hash`;
-    console.log("[neynar] checkUserCommented: Method 2 - checking replies endpoint", repliesUrl);
+    const repliesUrl = `https://api.neynar.com/v2/farcaster/cast/replies?identifier=${fullHash}&type=hash&limit=100`;
+    console.log("[neynar] checkUserCommented: Method 2 - checking replies endpoint (limit=100)", repliesUrl);
     const res = await fetch(repliesUrl, { headers: { "api_key": cleanApiKey } });
     
     if (res.ok) {
@@ -485,8 +529,8 @@ export async function checkUserCommented(fullHash: string, userFid: number): Pro
   
   for (const hashVariant of hashVariants) {
     try {
-      const url = `https://api.neynar.com/v2/farcaster/casts?parent_hash=${hashVariant}&limit=100`;
-      console.log("[neynar] checkUserCommented: Method 3 - checking parent_hash", url, { hashVariant });
+      const url = `https://api.neynar.com/v2/farcaster/casts?parent_hash=${hashVariant}&limit=200`;
+      console.log("[neynar] checkUserCommented: Method 3 - checking parent_hash (limit=200)", url, { hashVariant });
       const res = await fetch(url, { headers: { "api_key": cleanApiKey } });
       
       if (res.ok) {
@@ -535,9 +579,10 @@ export async function checkUserCommented(fullHash: string, userFid: number): Pro
   }
   
   // Метод 4: Проверка через user/casts (все касты пользователя, ищем комментарии к этому cast)
+  // Увеличиваем лимит до 300 для проверки большего количества кастов
   try {
-    const userCastsUrl = `https://api.neynar.com/v2/farcaster/user/casts?fid=${userFid}&limit=200`;
-    console.log("[neynar] checkUserCommented: Method 4 - checking user casts", userCastsUrl);
+    const userCastsUrl = `https://api.neynar.com/v2/farcaster/user/casts?fid=${userFid}&limit=300`;
+    console.log("[neynar] checkUserCommented: Method 4 - checking user casts (limit=300)", userCastsUrl);
     const res = await fetch(userCastsUrl, { headers: { "api_key": cleanApiKey } });
     
     if (res.ok) {
@@ -545,33 +590,55 @@ export async function checkUserCommented(fullHash: string, userFid: number): Pro
       const casts = data?.result?.casts || data?.casts || [];
       console.log("[neynar] checkUserCommented: Method 4 - found user casts", casts.length);
       
-      // Проверяем все варианты parent_hash
+        // Проверяем все варианты parent_hash и thread_hash
       const hasComment = casts.some((c: any) => {
         const parentHash = c.parent_hash || c.parent?.hash || c.parent_author?.hash;
-        if (!parentHash) return false;
+        const threadHash = c.thread_hash || c.thread?.hash;
+        
+        if (!parentHash && !threadHash) return false;
         
         // Нормализуем parentHash для сравнения
-        const normalizedParentHash = parentHash.startsWith('0x') ? parentHash.slice(2) : parentHash;
-        const parentHashWith0x = parentHash.startsWith('0x') ? parentHash : `0x${parentHash}`;
+        const normalizedParentHash = parentHash?.startsWith('0x') ? parentHash.slice(2) : parentHash;
+        const parentHashWith0x = parentHash?.startsWith('0x') ? parentHash : parentHash ? `0x${parentHash}` : null;
         
-        // Сравниваем с разными вариантами target hash
-        const match = 
+        // Нормализуем threadHash для сравнения
+        const normalizedThreadHash = threadHash?.startsWith('0x') ? threadHash.slice(2) : threadHash;
+        const threadHashWith0x = threadHash?.startsWith('0x') ? threadHash : threadHash ? `0x${threadHash}` : null;
+        
+        // Сравниваем с разными вариантами target hash (проверяем и parent_hash, и thread_hash)
+        const parentMatch = parentHash && (
           parentHash.toLowerCase() === fullHash.toLowerCase() ||
           parentHash.toLowerCase() === normalizedHash.toLowerCase() ||
           parentHash.toLowerCase() === hashWith0x.toLowerCase() ||
-          normalizedParentHash.toLowerCase() === fullHash.toLowerCase() ||
-          normalizedParentHash.toLowerCase() === normalizedHash.toLowerCase() ||
-          parentHashWith0x.toLowerCase() === fullHash.toLowerCase() ||
-          parentHashWith0x.toLowerCase() === hashWith0x.toLowerCase();
+          normalizedParentHash?.toLowerCase() === fullHash.toLowerCase() ||
+          normalizedParentHash?.toLowerCase() === normalizedHash.toLowerCase() ||
+          parentHashWith0x?.toLowerCase() === fullHash.toLowerCase() ||
+          parentHashWith0x?.toLowerCase() === hashWith0x.toLowerCase()
+        );
+        
+        const threadMatch = threadHash && (
+          threadHash.toLowerCase() === fullHash.toLowerCase() ||
+          threadHash.toLowerCase() === normalizedHash.toLowerCase() ||
+          threadHash.toLowerCase() === hashWith0x.toLowerCase() ||
+          normalizedThreadHash?.toLowerCase() === fullHash.toLowerCase() ||
+          normalizedThreadHash?.toLowerCase() === normalizedHash.toLowerCase() ||
+          threadHashWith0x?.toLowerCase() === fullHash.toLowerCase() ||
+          threadHashWith0x?.toLowerCase() === hashWith0x.toLowerCase()
+        );
+        
+        const match = parentMatch || threadMatch;
         
         if (match) {
           console.log("[neynar] checkUserCommented: ✅ found comment via user/casts", { 
             commentHash: c.hash, 
             parentHash, 
+            threadHash,
             normalizedParentHash,
+            normalizedThreadHash,
             fullHash,
             normalizedHash,
             hashWith0x,
+            matchType: parentMatch ? 'parent_hash' : 'thread_hash',
             commentText: c.text?.substring(0, 50)
           });
         }
