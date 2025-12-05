@@ -86,6 +86,30 @@ export default async function handler(
       console.log("[VERIFY] Method 2 result:", completed);
     }
 
+    // Для комментариев: если не найдено, пробуем еще раз через 5 секунд (индексация Neynar)
+    if (!completed && taskType === "comment") {
+      console.log("[VERIFY] Comment not found, waiting 5 seconds for Neynar indexing and retrying...");
+      await new Promise(resolve => setTimeout(resolve, 5000));
+      
+      console.log("[VERIFY] Retry Method 1: checkUserTaskByHash");
+      completed = await checkUserTaskByHash(
+        fullHash,
+        Number(userFid),
+        taskType
+      );
+      console.log("[VERIFY] Retry Method 1 result:", completed);
+      
+      if (!completed) {
+        console.log("[VERIFY] Retry Method 2: checkUserReactionsByCast");
+        completed = await checkUserReactionsByCast(
+          fullHash,
+          Number(userFid),
+          taskType
+        );
+        console.log("[VERIFY] Retry Method 2 result:", completed);
+      }
+    }
+
     console.log("[VERIFY] Final result:", { completed, castHash: fullHash });
 
     return res.status(200).json({

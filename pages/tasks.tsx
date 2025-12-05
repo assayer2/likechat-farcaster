@@ -683,7 +683,7 @@ export default function Tasks() {
       if (activityType === 'like') {
         await new Promise(resolve => setTimeout(resolve, 3000)); // 3 секунды задержки для лайков
       } else if (activityType === 'comment') {
-        await new Promise(resolve => setTimeout(resolve, 5000)); // 5 секунд задержки для комментариев (нужно больше времени на индексацию)
+        await new Promise(resolve => setTimeout(resolve, 10000)); // 10 секунд задержки для комментариев (нужно больше времени на индексацию в Neynar)
       } else if (activityType === 'recast') {
         await new Promise(resolve => setTimeout(resolve, 3000)); // 3 секунды задержки для рекастов
       }

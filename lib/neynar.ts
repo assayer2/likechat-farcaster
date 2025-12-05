@@ -471,53 +471,74 @@ export async function checkUserCommented(fullHash: string, userFid: number): Pro
   }
   
   // Метод 2: Проверка через replies endpoint (специальный endpoint для replies)
-  // Увеличиваем лимит до 100 для получения большего количества replies
+  // Увеличиваем лимит до 200 и пробуем несколько запросов для получения всех replies
   try {
-    const repliesUrl = `https://api.neynar.com/v2/farcaster/cast/replies?identifier=${fullHash}&type=hash&limit=100`;
-    console.log("[neynar] checkUserCommented: Method 2 - checking replies endpoint (limit=100)", repliesUrl);
-    const res = await fetch(repliesUrl, { headers: { "api_key": cleanApiKey } });
+    let cursor: string | null = null;
+    let allReplies: any[] = [];
+    let pageCount = 0;
+    const maxPages = 3; // Максимум 3 страницы (до 600 replies)
     
-    if (res.ok) {
-      const data = await res.json();
-      console.log("[neynar] checkUserCommented: Method 2 - response keys", Object.keys(data || {}));
+    do {
+      pageCount++;
+      const cursorParam = cursor ? `&cursor=${cursor}` : '';
+      const repliesUrl = `https://api.neynar.com/v2/farcaster/cast/replies?identifier=${fullHash}&type=hash&limit=200${cursorParam}`;
+      console.log(`[neynar] checkUserCommented: Method 2 - checking replies endpoint (page ${pageCount}, limit=200)`, repliesUrl.substring(0, 150) + '...');
       
-      const replies = data?.result?.replies || data?.replies || data?.result?.casts || data?.casts || data?.result?.result?.replies || [];
-      console.log("[neynar] checkUserCommented: Method 2 - found replies", replies.length, {
-        dataStructure: JSON.stringify(Object.keys(data || {})).substring(0, 200)
-      });
+      const res = await fetch(repliesUrl, { headers: { "api_key": cleanApiKey } });
       
-      // Логируем первые несколько replies для отладки
-      if (replies.length > 0) {
-        console.log("[neynar] checkUserCommented: Method 2 - sample replies", replies.slice(0, 3).map((r: any) => ({
-          hash: r.hash,
-          authorFid: r.author?.fid || r.fid || r.author_fid,
-          parentHash: r.parent_hash,
-          text: r.text?.substring(0, 30)
-        })));
-      }
-      
-      const hasReply = replies.some((r: any) => {
-        const authorFid = r.author?.fid || r.fid || r.author_fid;
-        const match = Number(authorFid) === Number(userFid);
-        if (match) {
-          console.log("[neynar] checkUserCommented: ✅ found reply via replies endpoint", { 
-            replyHash: r.hash, 
-            authorFid, 
-            userFid,
-            parentHash: r.parent_hash,
-            replyText: r.text?.substring(0, 50)
-          });
+      if (res.ok) {
+        const data = await res.json();
+        console.log("[neynar] checkUserCommented: Method 2 - response keys", Object.keys(data || {}));
+        
+        const replies = data?.result?.replies || data?.replies || data?.result?.casts || data?.casts || data?.result?.result?.replies || [];
+        allReplies = [...allReplies, ...replies];
+        
+        console.log(`[neynar] checkUserCommented: Method 2 - page ${pageCount} found ${replies.length} replies, total: ${allReplies.length}`);
+        
+        // Получаем cursor для следующей страницы
+        cursor = data?.result?.next?.cursor || data?.next?.cursor || null;
+        
+        // Проверяем, есть ли уже комментарий от пользователя
+        const hasReply = replies.some((r: any) => {
+          const authorFid = r.author?.fid || r.fid || r.author_fid;
+          const match = Number(authorFid) === Number(userFid);
+          if (match) {
+            console.log("[neynar] checkUserCommented: ✅ found reply via replies endpoint", { 
+              replyHash: r.hash, 
+              authorFid, 
+              userFid,
+              parentHash: r.parent_hash,
+              replyText: r.text?.substring(0, 50),
+              page: pageCount
+            });
+            return true;
+          }
+          return false;
+        });
+        
+        if (hasReply) {
+          console.log("[neynar] checkUserCommented: ✅ found via replies endpoint", { fullHash, userFid, page: pageCount });
+          return true;
         }
-        return match;
+      } else {
+        const errorText = await res.text().catch(() => '');
+        console.warn("[neynar] checkUserCommented: Method 2 - API error", res.status, res.statusText, errorText.substring(0, 200));
+        break;
+      }
+    } while (cursor && pageCount < maxPages);
+    
+    // Если не нашли в процессе, проверяем все собранные replies
+    if (allReplies.length > 0) {
+      console.log("[neynar] checkUserCommented: Method 2 - checking all collected replies", allReplies.length);
+      const hasReply = allReplies.some((r: any) => {
+        const authorFid = r.author?.fid || r.fid || r.author_fid;
+        return Number(authorFid) === Number(userFid);
       });
       
       if (hasReply) {
-        console.log("[neynar] checkUserCommented: ✅ found via replies endpoint", { fullHash, userFid });
+        console.log("[neynar] checkUserCommented: ✅ found via replies endpoint (all pages checked)", { fullHash, userFid, totalReplies: allReplies.length });
         return true;
       }
-    } else {
-      const errorText = await res.text().catch(() => '');
-      console.warn("[neynar] checkUserCommented: Method 2 - API error", res.status, res.statusText, errorText.substring(0, 200));
     }
   } catch (e: any) {
     console.warn("[neynar] checkUserCommented: Method 2 - replies endpoint failed", e?.message || e);
@@ -529,8 +550,8 @@ export async function checkUserCommented(fullHash: string, userFid: number): Pro
   
   for (const hashVariant of hashVariants) {
     try {
-      const url = `https://api.neynar.com/v2/farcaster/casts?parent_hash=${hashVariant}&limit=200`;
-      console.log("[neynar] checkUserCommented: Method 3 - checking parent_hash (limit=200)", url, { hashVariant });
+      const url = `https://api.neynar.com/v2/farcaster/casts?parent_hash=${hashVariant}&limit=500`;
+      console.log("[neynar] checkUserCommented: Method 3 - checking parent_hash (limit=500)", url, { hashVariant });
       const res = await fetch(url, { headers: { "api_key": cleanApiKey } });
       
       if (res.ok) {
@@ -581,8 +602,8 @@ export async function checkUserCommented(fullHash: string, userFid: number): Pro
   // Метод 4: Проверка через user/casts (все касты пользователя, ищем комментарии к этому cast)
   // Увеличиваем лимит до 300 для проверки большего количества кастов
   try {
-    const userCastsUrl = `https://api.neynar.com/v2/farcaster/user/casts?fid=${userFid}&limit=300`;
-    console.log("[neynar] checkUserCommented: Method 4 - checking user casts (limit=300)", userCastsUrl);
+    const userCastsUrl = `https://api.neynar.com/v2/farcaster/user/casts?fid=${userFid}&limit=500`;
+    console.log("[neynar] checkUserCommented: Method 4 - checking user casts (limit=500)", userCastsUrl);
     const res = await fetch(userCastsUrl, { headers: { "api_key": cleanApiKey } });
     
     if (res.ok) {
